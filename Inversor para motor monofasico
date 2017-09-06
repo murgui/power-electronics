@@ -1,7 +1,6 @@
 /*********************************************************************
 * Sistema de control de un convertidors DC-AC para el control de un motor asíncrono monofásico
 * DCPE Primavera 2017
-* Realizado por Nicolás Murguizur
 * La consigna de entrada a set_pwmX_duty() tiene 16 bits para trabajar de 0 a 100
 *
 *
