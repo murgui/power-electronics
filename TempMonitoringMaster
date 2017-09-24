@@ -1,0 +1,170 @@
+/********************************************************************************
+*Sistema de adquisición de temperaturas. Elemento master
+*Sistema Maestro-Esclavo. Adquisición basada en NTC linearizado paralelo.
+*Comunicación CAN e I2C.
+*e-Tech Racing 2015-2016
+*Nicolás Murguizur
+*
+*
+*
+********************************************************************************/
+
+#include <18F2685.h>
+#device adc=8
+
+#FUSES HS                       //High speed Osc (> 4mhz for PCM/PCH) (>10mhz for PCD)
+#use delay(clock=20000000)
+#define CAN_USE_EXTENDED_ID FALSE
+#include <can-18xxx8.c>
+#use i2c(Master, sda=PIN_C4, scl=PIN_C3,slow=150000)
+
+
+int8 data[7][12],i,q=0,dir[7]={0xA0,0xB0,0xC0,0xD0,0xE0,0xB2,0xA2},d;
+int tminent,tmindec,tmaxent,tmaxdec,tavg,tmaxpos,c=0,cobid=0,lengthCAN=0;
+int16 sum_avg;
+void sum_msg();
+
+
+//Recepción del mensaje de sincronismo
+#int_canrx0
+void canrx0_int ( ) {
+
+   cobid = ((unsigned int16)RXB0SIDH << 3) | ((RXB0SIDL & 0xE0) >> 5); 
+   lengthCAN = (unsigned int8)RXB0DLC & 0xF;
+   
+   if (cobid == 0x80){
+      c++;      
+   }
+   RXB0CON.RXFUL = 0;
+  }
+#int_canrx1
+void canrx1_int ( ) {
+//Write   
+}
+
+ 
+#int_cantx0
+void cantx0_int ( ) {
+//Write   
+}
+
+#int_cantx1
+void cantx1_int ( ) {
+//Write  
+}
+
+#int_cantx2
+void cantx2_int ( ) {
+//Write  
+}
+
+void main() {
+   delay_ms(2000);
+   disable_interrupts(GLOBAL);
+   can_init();
+   can_set_mode(CAN_OP_CONFIG);
+   
+   BRGCON1.brp=1; 
+   BRGCON1.sjw=1; 
+   BRGCON2.prseg=2; 
+   BRGCON2.seg1ph=7; 
+   BRGCON2.sam=FALSE; 
+   BRGCON2.seg2phts=FALSE;  
+   BRGCON3.seg2ph=6; 
+   BRGCON3.wakfil=FALSE;
+   CIOCON = 0x20;
+     
+   can_set_mode(CAN_OP_NORMAL);
+
+   enable_interrupts(int_canrx0);
+   enable_interrupts(int_canrx1);
+   enable_interrupts(int_cantx0);
+   enable_interrupts(int_cantx1);
+   enable_interrupts(int_cantx2);
+   enable_interrupts(GLOBAL);
+
+while(true){ 
+ 
+   //Recepción de las temperturas de 7 Esclavos
+   for(d=0;d<7;d++){
+      //Selección de esclavo
+      i2c_start();
+      i2c_write(dir[d]); 
+      i2c_write(0x00);
+      //Solicitud de información
+      i2c_start();
+      i2c_write(dir[d]+1); 
+      for(i=0;i<12;i++){
+         data[d][i] = i2c_read(1);}
+      data[d][i] = i2c_read(0);//Se esta escribiendo fuera de la matriz?
+      i2c_stop();
+   }
+   
+   sum_msg();
+       
+   //printing the data
+   /*printf("-------------\r");
+   for(d=0;d<7;d++){      
+      printf("//////PCB Slave nº %u ///////\r",d);
+      for(i=0;i<12;i+=2){
+         q++;
+         printf("Temperatura %u: %2u,%2u \n\r",q, data[d][i],data[d][i+1]);
+         delay_ms(300);
+      }
+      q=0;
+      printf("-------------\r");
+   }   
+   printf("?*?*?*?*?*?*?*?*?*?\r");
+   printf("Valor Máximo: %u . %u \r Valor Mínimo: %u . %u\r",tmaxent,tmaxdec,tminent,tmindec);
+   printf("Valor Medio: %u \r Posición Valor Máximo[stack&NTC]: %u \r",tavg,tmaxpos);
+   printf("?*?*?*?*?*?*?*?*?*?\r");
+   delay_ms(5000);*/
+   
+   
+   //Enviando información cada 20 mensajes de sincronismo
+   if (c == 20){
+      c = 0;
+      TXB0SIDH = (unsigned int8) (0x311 >> 3);//cobid   CAN MANUAL
+      TXB0SIDL = (unsigned int8) (0x311 << 5);
+      TXB0DLC  = 6;//length
+      TXB0D0   = tmaxent;
+      TXB0D1   = tmaxdec;
+      TXB0D2   = tminent;
+      TXB0D3   = tmindec;
+      TXB0D4   = tavg;
+      TXB0D5   = tmaxpos;
+      TXB0CON.txreq = 1;
+   }
+   }      
+}   
+
+/* Función que evalua la información recibida para saber cuáles son la mayor y
+menor temperatura. Guarda la posición de la primera y calcula la media.*/
+void sum_msg(){
+   int e,f;
+   tminent=255;
+   tmaxent=0;
+   tavg=0;
+   sum_avg=0;
+   
+   for (e=0;e<7;e++){
+      for(f=2;f<12;f+=2){
+         if (data[e][f]>tmaxent){
+            tmaxent=data[e][f];
+            tmaxdec=data[e][f+1];
+            tmaxpos=(e<<4)+f;}//en un byte posiciona: 4 MSB posicion stack, 4 LSB posicion NTCs
+         if (data[e][f]<tminent){
+            tminent=data[e][f];
+            tmindec=data[e][f+1];}
+         sum_avg+=data[e][f];
+      }
+   }
+   tavg=sum_avg/42;
+
+//Envío de la información mediante CAN, usando la función dopada. No funcional, falta depurar
+/*can_putd(0x255,&tmaxent,1,1,FALSE,FALSE);
+can_putd(0x256,&tmaxdec,1,1,FALSE,FALSE);
+can_putd(0x257,&tminent,1,1,FALSE,FALSE);
+can_putd(0x258,&tmindec,1,1,FALSE,FALSE);
+can_putd(0x259,&tavg,1,1,FALSE,FALSE);*/
+}
