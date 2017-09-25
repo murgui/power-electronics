@@ -1,0 +1,123 @@
+/********************************************************************************
+*Sistema de adquisición de temperaturas. Elemento Esclavo
+*Sistema Maestro-Esclavo. Adquisición basada en NTC linearizado paralelo.
+*Comunicación CAN e I2C.
+*e-Tech Racing 2015-2016
+*Nicolás Murguizur
+*
+*
+*
+********************************************************************************/
+
+#include <16F1826.h>
+#fuses INTRC_IO,NOWDT,NOMCLR,NOPROTECT,NOLVP 
+#device ADC=10
+#use delay(int=16M) 
+#use rs232(baud=9600, xmit=PIN_b5, rcv=PIN_b2) //Debugging con USB<=>TTL
+#use i2c(SLAVE, SDA=PIN_b1, SCL=PIN_b4, address=0xB2)//Dirección elegida arbitrariamente, A slave does not have a speed
+
+
+BYTE address, tx_buffer[0x10], rx_buffer[0x10]; //
+int16 T[6],measure[6],sum[6];
+int8 f1[6],f2[6],v[6]={0,0,0,0,0,0},z,b=0,a=0;
+const int8 channels[6]={2,3,4,5,6,9};//Canales marcados por la PCB
+
+#bit CKP=getenv("BIT:CKP") //see why below 
+
+#INT_SSP 
+void ssp_interupt (void) 
+{ 
+   BYTE incoming, state; 
+
+   state = i2c_isr_state(); 
+   //State 80, is 'unique'. It requires a read, without releasing 
+   //the clock hold, followed by a write, and the hold released 
+   if(state == 0x80)                     //Master is sending data with reply 
+   { 
+      incoming = i2c_read(2); //read the byte without releasing clock 
+   }                       
+   else if (state<0x80) 
+   { 
+      incoming=i2c_read();         //normal read 
+      if(state == 1)                     //First received byte is address 
+         address = incoming; 
+      if(state >= 2)                     //later received bytes are data 
+         rx_buffer[address++] = incoming; 
+      //allows sequential writes 
+   } 
+   if(state >= 0x80)                     //Master is requesting data 
+   { 
+       
+       i2c_write(tx_buffer[address++]);
+       if (address==5) address=0;
+       //and sequential reads 
+       //Clock should release, but some compiler versions don't 
+       //so explicitly release it. 
+       CKP=TRUE; 
+   } 
+   if (address>=0x10) 
+       address=0x0F; //ensure cannot write/read beyond buffer 
+} 
+
+void main () 
+{ 
+   setup_adc_ports(sAN2|sAN3|sAN4|sAN5|sAN6|sAN9|VSS_VDD);
+   setup_adc(ADC_CLOCK_DIV_32);
+   int8 ctr,i; 
+   enable_interrupts(GLOBAL); 
+   enable_interrupts(INT_SSP);
+
+   while (TRUE) { 
+   
+   for(i=0;i<6;i++){
+         set_adc_channel(channels[i]);
+         delay_us(100);
+         //The first time, it won't have enough information in order to let the filter
+         //work so it gathers 7 extra ADC readings only during the first program run
+         if (v[i]==0){            
+            sum[i]=read_adc();
+            for (z=0;z<6;z++){
+               sum[i]+=read_adc();
+               }
+            v[i]=1;}
+         sum[i]+=read_adc();
+         measure[i]=sum[i]>>3;
+         sum[i]-=measure[i];
+         //adapts the reading to a mathematic function to find the temperature
+         T[i]=(((measure[i]/1024.0*5-13.971)/-0.0373)-273.15)*100;
+         f1[i]=T[i]/100;
+         f2[i]=T[i]-f1[i]*100;
+         printf("lectura %u: %u %u\r",i,f1[i],f2[i]);
+         delay_ms(100);
+   }        
+   
+   for(i=0;i<12;i++){//cargar valores del buffer de manera intercalada.
+   //la posiciones impares de tx_buffer(empezandoa  contar desde 0 y contandolo como impar) representan los
+   //6 valores de enteros. Las posiciones de pares representan los decimales.
+   //resultando 12 bytes de informacion.
+      
+      if((i+1)%2==1){
+         tx_buffer[i]=f1[a];
+         a++;
+         if(a==6) a=0;
+      }
+      if((i+1)%2==0){
+         tx_buffer[i]=f2[b];
+         b++;
+         if(b==6) b=0;
+      }
+      printf("tx buffer %u:%u\r",i,tx_buffer[i]);
+      delay_ms(150);
+   }
+   delay_ms(100);
+   /*printf("-------------\r");
+   for(i=0;i<0x10;i++){
+   printf("rx: %u\r",rx_buffer[i]);
+   delay_ms(25);
+   printf("tx: %u\r",tx_buffer[i]);
+   delay_ms(500);}
+   printf("-------------\r");
+   delay_ms(500); */
+   
+   }
+} 
