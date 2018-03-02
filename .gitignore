@@ -1,2 +1,5 @@
 # iOS Files
 .DS_Store
+
+# Matlab temporal files
+*.m~
